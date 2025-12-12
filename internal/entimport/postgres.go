@@ -57,6 +57,8 @@ func (p *Postgres) SchemaMutations(ctx context.Context) ([]schemast.Mutator, err
 func (p *Postgres) field(column *schema.Column) (f ent.Field, err error) {
 	name := column.Name
 	switch typ := column.Type.Type.(type) {
+	case *postgres.ArrayType:
+		f, err = p.convertArray(typ, name)
 	case *schema.BinaryType:
 		f = field.Bytes(name)
 	case *schema.BoolType:
@@ -121,4 +123,20 @@ func (p *Postgres) convertSerial(typ *postgres.SerialType, name string) ent.Fiel
 		SchemaType(map[string]string{
 			dialect.Postgres: typ.T, // Override Postgres.
 		})
+}
+
+// convertArray handles PostgreSQL array types.
+func (p *Postgres) convertArray(typ *postgres.ArrayType, name string) (f ent.Field, err error) {
+	// For text[] and varchar[] arrays, use Strings field
+	switch typ.Type.(type) {
+	case *schema.StringType:
+		f = field.Strings(name)
+	case *schema.IntegerType:
+		f = field.Ints(name)
+	case *schema.FloatType:
+		f = field.Floats(name)
+	default:
+		return nil, fmt.Errorf("entimport: unsupported arary %+v %T for column %v", typ, typ, name)
+	}
+	return f, nil
 }
