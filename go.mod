@@ -1,4 +1,4 @@
-module ariga.io/entimport
+module github.com/brijesh1998/entimport
 
 go 1.24.6
 
