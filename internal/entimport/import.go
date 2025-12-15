@@ -56,6 +56,13 @@ type (
 
 	// ImportOption allows for managing import configuration using functional options.
 	ImportOption func(*ImportOptions)
+
+	// skippedTableInfo holds information about a table that was skipped during import.
+	skippedTableInfo struct {
+		name      string
+		pkParts   []string
+		isPureM2M bool
+	}
 )
 
 // WithSchemaPath provides a DSN (data source name) for reading the schema & tables from.
@@ -328,7 +335,19 @@ func applyColumnAttributes(f ent.Field, col *schema.Column) {
 func schemaMutations(field fieldFunc, tables []*schema.Table) ([]schemast.Mutator, error) {
 	mutations := make(map[string]schemast.Mutator)
 	joinTables := make(map[string]*schema.Table)
+	skippedTables := make([]skippedTableInfo, 0)
+
 	for _, table := range tables {
+		// Check for composite primary keys
+		if hasCompositePK(table) {
+			skippedTables = append(skippedTables, skippedTableInfo{
+				name:      table.Name,
+				pkParts:   getPKColumns(table),
+				isPureM2M: isPureJoinTable(table),
+			})
+			continue
+		}
+
 		if isJoinTable(table) {
 			joinTables[table.Name] = table
 			continue
@@ -339,6 +358,12 @@ func schemaMutations(field fieldFunc, tables []*schema.Table) ([]schemast.Mutato
 		}
 		mutations[table.Name] = node
 	}
+
+	// Print warnings for skipped tables
+	if len(skippedTables) > 0 {
+		printSkippedTablesWarning(skippedTables)
+	}
+
 	for _, table := range tables {
 		if t, ok := joinTables[table.Name]; ok {
 			err := upsertManyToMany(mutations, t)
@@ -402,4 +427,73 @@ func upsertOneToX(mutations map[string]schemast.Mutator, table *schema.Table) {
 		}
 		upsertRelation(parentNode, childNode, opts)
 	}
+}
+
+// hasCompositePK checks if a table has a composite primary key.
+func hasCompositePK(table *schema.Table) bool {
+	return table.PrimaryKey != nil && len(table.PrimaryKey.Parts) > 1
+}
+
+// getPKColumns returns the primary key column names.
+func getPKColumns(table *schema.Table) []string {
+	if table.PrimaryKey == nil {
+		return nil
+	}
+	cols := make([]string, 0, len(table.PrimaryKey.Parts))
+	for _, part := range table.PrimaryKey.Parts {
+		cols = append(cols, part.C.Name)
+	}
+	return cols
+}
+
+// isPureJoinTable checks if a table is a pure M2M join table (only 2 foreign keys, no additional columns).
+func isPureJoinTable(table *schema.Table) bool {
+	if len(table.ForeignKeys) != 2 {
+		return false
+	}
+	// Count non-FK columns
+	fkCols := make(map[string]bool)
+	for _, fk := range table.ForeignKeys {
+		for _, col := range fk.Columns {
+			fkCols[col.Name] = true
+		}
+	}
+	nonFKCount := 0
+	for _, col := range table.Columns {
+		if !fkCols[col.Name] {
+			nonFKCount++
+		}
+	}
+	return nonFKCount == 0
+}
+
+// printSkippedTablesWarning prints a warning message for skipped tables.
+func printSkippedTablesWarning(skipped []skippedTableInfo) {
+	fmt.Println("\n⚠️  Skipped", len(skipped), "table(s) with composite primary keys:")
+	fmt.Println("   (Ent requires single-column primary keys)")
+
+	for _, t := range skipped {
+		fmt.Printf("   - %s (%s)\n", t.name, formatPKParts(t.pkParts))
+		if t.isPureM2M {
+			fmt.Printf("     → Pure M2M join table: Define edges manually in related schemas\n")
+		} else {
+			fmt.Printf("     → Has additional columns: Add a synthetic 'id' column to the table\n")
+		}
+	}
+
+	fmt.Println("\nFor more information on handling these tables, see:")
+	fmt.Println("  https://entgo.io/docs/schema-edges#edge-schema")
+	fmt.Println()
+}
+
+// formatPKParts formats primary key column names for display.
+func formatPKParts(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		result += ", " + parts[i]
+	}
+	return result
 }

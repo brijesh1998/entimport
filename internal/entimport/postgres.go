@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"ariga.io/atlas/sql/postgres"
 	"ariga.io/atlas/sql/schema"
@@ -82,7 +83,12 @@ func (p *Postgres) field(column *schema.Column) (f ent.Field, err error) {
 	case *postgres.UUIDType:
 		f = field.UUID(name, uuid.New())
 	default:
-		return nil, fmt.Errorf("entimport: unsupported type %q for column %v", typ, column.Name)
+		// Handle array types that Atlas wraps in sql()
+		if strings.HasSuffix(column.Type.Raw, "[]") {
+			f = p.convertRawArrayType(column.Type.Raw, name)
+		} else {
+			return nil, fmt.Errorf("entimport: unsupported type %q for column %v", typ, column.Name)
+		}
 	}
 	applyColumnAttributes(f, column)
 	return f, err
@@ -132,11 +138,37 @@ func (p *Postgres) convertArray(typ *postgres.ArrayType, name string) (f ent.Fie
 	case *schema.StringType:
 		f = field.Strings(name)
 	case *schema.IntegerType:
-		f = field.Ints(name)
+		f = field.JSON(name, []int{})
 	case *schema.FloatType:
-		f = field.Floats(name)
+		f = field.JSON(name, []float64{})
 	default:
-		return nil, fmt.Errorf("entimport: unsupported arary %+v %T for column %v", typ, typ, name)
+		return nil, fmt.Errorf("entimport: unsupported array %+v %T for column %v", typ, typ, name)
 	}
 	return f, nil
+}
+
+// convertRawArrayType handles array types from raw SQL strings (e.g., "text[]", "integer[]").
+func (p *Postgres) convertRawArrayType(rawType, name string) ent.Field {
+	// Remove the [] suffix to get the base type
+	baseType := strings.TrimSuffix(rawType, "[]")
+
+	switch baseType {
+	case "text", "varchar", "character varying":
+		return field.Strings(name)
+	case "smallint":
+		return field.JSON(name, []int16{})
+	case "integer", "int", "int4":
+		return field.JSON(name, []int32{})
+	case "bigint", "int8":
+		return field.JSON(name, []int{})
+	case "boolean", "bool":
+		return field.JSON(name, []bool{})
+	case "real", "float4":
+		return field.JSON(name, []float32{})
+	case "double precision", "float8":
+		return field.JSON(name, []float64{})
+	default:
+		// For unknown array types, use generic JSON field
+		return field.JSON(name, []interface{}{})
+	}
 }
